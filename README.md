@@ -12,10 +12,10 @@ packages, browser automation, API keys, accounts, or configuration are required.
 Most individual scripts also support Python 3.8; Deloitte requires Python 3.9
 because it uses `zoneinfo`.
 
-Clone this private repository with an account that has access:
+Clone the repository:
 
 ```sh
-git clone git@github.com:aliciaahunt/jobs.git
+git clone https://github.com/aliciaahunt/jobs.git
 cd jobs
 python3 --version
 python3 jobs.py
@@ -238,7 +238,7 @@ that they remain usable independently.
 
 ## Git workflow
 
-The repository is private at [aliciaahunt/jobs](https://github.com/aliciaahunt/jobs).
+The repository is public at [aliciaahunt/jobs](https://github.com/aliciaahunt/jobs).
 After editing, run the tests and commit the changes:
 
 ```sh
@@ -250,5 +250,5 @@ git push
 ```
 
 Stage the actual files you changed. The initial branch follows the local Git
-default (`main`), and `origin` points to the private GitHub repository. No
+default (`main`), and `origin` points to the GitHub repository. No
 scheduled fetches or background services are installed.
