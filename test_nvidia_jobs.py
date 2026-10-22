@@ -7,6 +7,7 @@ import sys
 import unittest
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
+from urllib.error import HTTPError
 
 
 SCRIPT = Path(__file__).with_name('nvidia-jobs.py')
@@ -51,6 +52,109 @@ class NvidiaJobsTests(unittest.TestCase):
             'url': 'https://jobs.nvidia.com/careers/job/893398080225',
             'published': 1791504000,
         }])
+
+    def test_recovers_from_a_temporary_forbidden_response(self):
+        module = load_script()
+        job = posting(1, 'London role', ['UK, London'])
+        url = module.SEARCH_URL + '&start=0'
+        error = HTTPError(url, 403, 'Forbidden', {}, None)
+        with patch('urllib.request.urlopen', side_effect=[error, response([job], 1)]) as transport, \
+                patch('time.sleep') as sleep:
+            jobs = module.collect()
+        self.assertEqual([job['title'] for job in jobs], ['London role'])
+        self.assertEqual([call.args[0].full_url for call in transport.call_args_list],
+                         [url, url])
+        sleep.assert_called_once_with(2)
+
+    def test_retries_the_failed_page_without_losing_or_duplicating_jobs(self):
+        module = load_script()
+        url = module.SEARCH_URL + '&start=1'
+        pages = [response([posting(1, 'First role', ['UK, London'])], 2),
+                 HTTPError(url, 403, 'Forbidden', {}, None),
+                 response([posting(2, 'Second role', ['UK, London'])], 2)]
+        with patch('urllib.request.urlopen', side_effect=pages) as transport, \
+                patch('time.sleep'):
+            jobs = module.collect()
+        self.assertEqual([job['title'] for job in jobs], ['First role', 'Second role'])
+        starts = [parse_qs(urlparse(call.args[0].full_url).query)['start']
+                  for call in transport.call_args_list]
+        self.assertEqual(starts, [['0'], ['1'], ['1']])
+
+    def test_persistent_forbidden_response_stays_a_failure_and_names_the_url(self):
+        module = load_script()
+        url = module.SEARCH_URL + '&start=1'
+        errors = [HTTPError(url, 403, 'Forbidden', {}, None) for _ in range(3)]
+        pages = [response([posting(1, 'First role', ['UK, London'])], 2)] + errors
+        out, err = io.StringIO(), io.StringIO()
+        with patch('urllib.request.urlopen', side_effect=pages) as transport, \
+                patch('time.sleep') as sleep:
+            result = module.run(stdout=out, stderr=err)
+        self.assertEqual(result, 1)
+        self.assertEqual(out.getvalue(), '')
+        self.assertIn('HTTP Error 403: Forbidden', err.getvalue())
+        self.assertIn('Request URL: ' + url, err.getvalue())
+        self.assertEqual(transport.call_count, 4)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [2, 4])
+
+    def test_retries_rate_limits_and_temporary_server_errors(self):
+        module = load_script()
+        url = module.SEARCH_URL + '&start=0'
+        for status in (429, 500, 502, 503, 504):
+            with self.subTest(status=status):
+                error = HTTPError(url, status, 'Temporary failure', {'Retry-After': '7'}, None)
+                with patch('urllib.request.urlopen', side_effect=[error, response([], 0)]), \
+                        patch('time.sleep') as sleep:
+                    self.assertEqual(module.collect(), [])
+                sleep.assert_called_once_with(7)
+
+    def test_respects_retry_after_dates(self):
+        module = load_script()
+        url = module.SEARCH_URL + '&start=0'
+        error = HTTPError(url, 503, 'Service Unavailable',
+                          {'Retry-After': 'Sat, 10 Oct 2026 12:00:07 GMT'}, None)
+        with patch('urllib.request.urlopen', side_effect=[error, response([], 0)]), \
+                patch('time.time', return_value=1791633600), patch('time.sleep') as sleep:
+            self.assertEqual(module.collect(), [])
+        sleep.assert_called_once_with(7)
+
+    def test_does_not_retry_before_a_long_retry_after_delay(self):
+        module = load_script()
+        url = module.SEARCH_URL + '&start=0'
+        for delay in ('300', 'Sat, 10 Oct 2026 12:05:00 GMT'):
+            with self.subTest(delay=delay):
+                error = HTTPError(url, 429, 'Too Many Requests', {'Retry-After': delay}, None)
+                self.addCleanup(error.close)
+                with patch('urllib.request.urlopen', side_effect=error) as transport, \
+                        patch('time.time', return_value=1791633600), patch('time.sleep') as sleep:
+                    with self.assertRaises(HTTPError):
+                        module.collect()
+                transport.assert_called_once()
+                sleep.assert_not_called()
+
+    def test_invalid_retry_after_uses_bounded_backoff(self):
+        module = load_script()
+        url = module.SEARCH_URL + '&start=0'
+        error = HTTPError(url, 403, 'Forbidden', {'Retry-After': 'not a date'}, None)
+        with patch('urllib.request.urlopen', side_effect=[error, response([], 0)]), \
+                patch('time.sleep') as sleep:
+            self.assertEqual(module.collect(), [])
+        sleep.assert_called_once_with(2)
+
+    def test_permanent_http_error_is_not_retried_and_names_the_url(self):
+        module = load_script()
+        url = module.SEARCH_URL + '&start=0'
+        for status in (400, 401, 404):
+            with self.subTest(status=status):
+                error = HTTPError(url, status, 'Permanent failure', {}, None)
+                out, err = io.StringIO(), io.StringIO()
+                with patch('urllib.request.urlopen', side_effect=error) as transport, \
+                        patch('time.sleep') as sleep:
+                    result = module.run(stdout=out, stderr=err)
+                self.assertEqual(result, 1)
+                self.assertEqual(out.getvalue(), '')
+                self.assertIn('Request URL: ' + url, err.getvalue())
+                transport.assert_called_once()
+                sleep.assert_not_called()
 
     def test_command_reports_fetch_failure_without_a_traceback(self):
         result = subprocess.run([sys.executable, '-c', '''

@@ -9,12 +9,14 @@ Location matching follows NVIDIA's London search, including nearby and UK remote
 
 import argparse
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 import json
 import os
 import shutil
 import sys
 import textwrap
 import time
+import urllib.error
 import urllib.request
 
 
@@ -24,6 +26,34 @@ SECONDS_PER_DAY = 86400
 
 SEARCH_URL = ('https://jobs.nvidia.com/api/pcsx/search?domain=nvidia.com&'
               'location=London%2C%20UK&filter_time_type=full%20time&sort_by=timestamp')
+
+
+def fetch_page(url):
+    """Retry intermittent public-feed refusals without advancing pagination."""
+    request = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as error:
+            if attempt == 2 or error.code not in (403, 429, 500, 502, 503, 504):
+                raise
+            delay = 2 ** (attempt + 1)
+            retry_after = error.headers.get('Retry-After', '') if error.headers else ''
+            if retry_after:
+                try:
+                    requested_delay = int(retry_after)
+                except ValueError:
+                    try:
+                        requested_delay = parsedate_to_datetime(retry_after).timestamp() - time.time()
+                    except (ValueError, TypeError, OverflowError):
+                        requested_delay = 0
+                # Do not retry earlier than NVIDIA requests or overrun the runner.
+                if requested_delay > 30:
+                    raise
+                delay = max(delay, requested_delay)
+            error.close()
+            time.sleep(delay)
 
 
 def collect(*, since=None):
@@ -36,10 +66,7 @@ def collect(*, since=None):
     total = None
     seen = set()
     while total is None or start < total:
-        request = urllib.request.Request(SEARCH_URL + '&start=' + str(start),
-                                         headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(request, timeout=30) as response:
-            payload = json.load(response)
+        payload = fetch_page(SEARCH_URL + '&start=' + str(start))
         if (not isinstance(payload, dict) or payload.get('status') != 200
                 or not isinstance(payload.get('data'), dict)):
             raise ValueError('NVIDIA job feed could not be recognised.')
@@ -213,6 +240,9 @@ def run(*, last24=False, now=None, stdout=None, stderr=None, skip_empty=False):
     except (OSError, ValueError) as error:
         label = '\033[1;31mError\033[0m' if use_colour(stderr) else 'Error'
         print(f'{label}: Could not fetch NVIDIA Careers jobs.\n{error}', file=stderr)
+        if isinstance(error, urllib.error.HTTPError):
+            print(f'Request URL: {error.url}', file=stderr)
+            error.close()
         return 1
     report = format_jobs(jobs, now, last24=last24, skip_empty=skip_empty,
                          colour=use_colour(stdout),

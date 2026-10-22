@@ -220,9 +220,14 @@ that they remain usable independently.
   `--last-30d` or an individual script to see its empty sections. Check standard
   error and the exit status for failures.
 - **Network errors or HTTP rate limits:** retry later. LinkedIn includes retries
-  for temporary failures and rate limits; avoid repeatedly fetching in a tight
-  loop. Requests generally have a 30-second timeout, but paging, detail requests,
-  and retries can make an entire run take longer.
+  for temporary failures and rate limits. NVIDIA makes up to three attempts per
+  page for intermittent HTTP 403, 429, and 500/502/503/504 errors, waiting 2 then
+  4 seconds between attempts. It respects `Retry-After` up to 30 seconds; longer
+  requested waits are reported as failures rather than retried too early.
+  Persistent NVIDIA HTTP failures include the failing request URL and remain
+  errors, not empty results. Avoid repeatedly fetching in a tight loop. Requests
+  generally have a 30-second timeout, but paging, detail requests, and retries
+  can make an entire run take longer.
 - **“Results changed” or incomplete-feed errors:** rerun. Many sources validate
   totals and duplicate IDs to avoid presenting incomplete results. Apple can
   automatically restart a changing search.

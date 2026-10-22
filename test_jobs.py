@@ -79,6 +79,42 @@ def command(http, *args, clock=NOW, output=None):
 
 
 class JobsCommandTests(unittest.TestCase):
+    def test_nvidia_temporary_forbidden_response_recovers_in_the_combined_command(self):
+        from test_nvidia_jobs import posting, response
+        from urllib.error import HTTPError
+        attempts = []
+        def feed(request, **kwargs):
+            attempts.append(request.full_url)
+            if len(attempts) == 1:
+                raise HTTPError(request.full_url, 403, 'Forbidden', {}, None)
+            return response([posting(1, 'Recent NVIDIA role', ['UK, London'], NOW - 100)], 1)
+        status, report, error = command(PublicHTTP(('nvidia',), {'nvidia': feed}),
+                                       '--companies', 'nvidia')
+        self.assertEqual(status, 0, error)
+        self.assertEqual(error, '')
+        self.assertIn('Recent NVIDIA role', report)
+        self.assertIn('https://jobs.nvidia.com/careers/job/1', report)
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[0], attempts[1])
+
+    def test_nvidia_persistent_forbidden_keeps_other_companies_and_reports_failure(self):
+        from urllib.error import HTTPError
+        attempts = []
+        def feed(request, **kwargs):
+            attempts.append(request.full_url)
+            raise HTTPError(request.full_url, 403, 'Forbidden', {}, None)
+        feeds = {'nvidia': feed, 'openai': dated_feeds()['openai']}
+        status, report, error = command(PublicHTTP(('nvidia', 'openai'), feeds),
+                                       '--companies', 'nvidia', 'openai')
+        self.assertEqual(status, 1)
+        self.assertIn('OPENAI CAREERS', report)
+        self.assertIn('Recent opening', report)
+        self.assertNotIn('NVIDIA CAREERS', report)
+        self.assertIn('Could not fetch NVIDIA Careers jobs.', error)
+        self.assertIn('HTTP Error 403: Forbidden', error)
+        self.assertIn('Request URL: ' + attempts[-1], error)
+        self.assertEqual(len(attempts), 3)
+
     def test_omitting_empty_date_sections_preserves_the_remaining_date_range(self):
         from test_openai_jobs import posting, response
         def feed(*args, **kwargs):
