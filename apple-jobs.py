@@ -18,6 +18,7 @@ import sys
 import time
 import re
 import textwrap
+import urllib.parse
 import urllib.request
 
 
@@ -58,6 +59,17 @@ def fetch_page(page):
             return data
         except (KeyError, TypeError, AttributeError) as error:
             raise ValueError('Apple search data format changed.') from error
+
+
+def _valid_job_slug(slug):
+    """Accept Apple's escaped titles while retaining a single safe URL segment."""
+    if not isinstance(slug, str) or not re.fullmatch(r'(?:[\w-]|%[0-9A-Fa-f]{2})+', slug):
+        return False
+    try:
+        decoded = urllib.parse.unquote(slug, errors='strict')
+    except UnicodeDecodeError:
+        return False
+    return decoded not in ('.', '..') and not re.search(r'[/\\?#%\x00-\x20\x7f]', decoded)
 
 
 def _collect_once(*, since=None):
@@ -107,7 +119,7 @@ def _collect_once(*, since=None):
                 raise ValueError('Missing Apple job title.')
             slug = raw.get('transformedPostingTitle')
             team = raw.get('team')
-            if (not isinstance(slug, str) or not re.fullmatch(r'[\w-]+', slug)
+            if (not _valid_job_slug(slug)
                     or not isinstance(team, dict) or not isinstance(team.get('teamCode'), str)
                     or not re.fullmatch(r'[A-Z0-9]+', team['teamCode'])):
                 raise ValueError('Apple job URL could not be recognised.')

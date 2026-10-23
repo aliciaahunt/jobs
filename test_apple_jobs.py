@@ -38,6 +38,30 @@ def page_response(jobs, total=None, page=1, location='postLocation-LND'):
 
 
 class AppleJobsTests(unittest.TestCase):
+    def test_preserves_apples_percent_encoded_symbol_in_the_job_url(self):
+        module = load_script()
+        row = posting('200690117-2114', '\uf8ff Business - Channel Account Executive',
+                      transformedPostingTitle='%EF%A3%BF-business-channel-account-executive',
+                      team={'teamCode': 'SLDEV'})
+        with patch('urllib.request.urlopen', return_value=page_response([row])):
+            jobs = module.collect()
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]['title'], row['postingTitle'])
+        self.assertEqual(jobs[0]['url'],
+                         'https://jobs.apple.com/en-gb/details/200690117-2114/'
+                         '%EF%A3%BF-business-channel-account-executive?team=SLDEV')
+
+    def test_rejects_malformed_or_unsafe_encoded_job_slugs(self):
+        module = load_script()
+        for slug in ['', '%', '%ZZ', '%FF', '%2e%2e', '%2Foutside', '%5Coutside',
+                     'engineer%3Fteam%3DBAD', 'engineer%23outside', 'engineer%00',
+                     'engineer%0A', 'engineer%20outside', '%252Foutside']:
+            with self.subTest(slug=slug):
+                with patch('urllib.request.urlopen', return_value=page_response([
+                        posting(transformedPostingTitle=slug)])):
+                    with self.assertRaises(ValueError):
+                        module.collect()
+
     def test_recovers_from_changed_results_and_returns_a_complete_fresh_search(self):
         module = load_script()
         with patch('urllib.request.urlopen', side_effect=[

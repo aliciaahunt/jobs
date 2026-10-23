@@ -79,6 +79,23 @@ def command(http, *args, clock=NOW, output=None):
 
 
 class JobsCommandTests(unittest.TestCase):
+    def test_apple_encoded_symbol_does_not_fail_the_combined_report(self):
+        from test_apple_jobs import posting, page_response
+        row = posting('200690117-2114', '\uf8ff Business - Channel Account Executive',
+                      transformedPostingTitle='%EF%A3%BF-business-channel-account-executive',
+                      team={'teamCode': 'SLDEV'}, postDateInGMT='2026-10-10T11:00:00Z')
+        feeds = {'apple': lambda *a, **k: page_response([row]),
+                 'openai': dated_feeds()['openai']}
+        status, report, error = command(PublicHTTP(('apple', 'openai'), feeds),
+                                       '--companies', 'apple', 'openai')
+        self.assertEqual(status, 0, error)
+        self.assertEqual(error, '')
+        self.assertIn(row['postingTitle'], report)
+        self.assertIn('https://jobs.apple.com/en-gb/details/200690117-2114/'
+                      '%EF%A3%BF-business-channel-account-executive?team=SLDEV', report)
+        self.assertIn('OPENAI CAREERS', report)
+        self.assertIn('Recent opening', report)
+
     def test_nvidia_temporary_forbidden_response_recovers_in_the_combined_command(self):
         from test_nvidia_jobs import posting, response
         from urllib.error import HTTPError
