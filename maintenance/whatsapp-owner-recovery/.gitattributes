@@ -1,0 +1,2 @@
+# A unified patch prefixes tab-indented context with one required space.
+recovery.patch whitespace=-space-before-tab
