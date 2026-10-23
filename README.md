@@ -241,6 +241,14 @@ that they remain usable independently.
   and source filters. Some timestamps reflect republication or job-order
   creation, and Google's timestamp fields have no public schema.
 
+## OpenClaw delivery maintenance
+
+For installations delivering these reports through OpenClaw, the optional
+[WhatsApp retained-owner recovery repair](maintenance/whatsapp-owner-recovery/)
+records the tested, pinned backport for a reconnect loop after credential-save
+shutdown fails. It includes regression tests and rollback guidance; it is not
+part of the collectors or their normal setup.
+
 ## Git workflow
 
 The repository is public at [aliciaahunt/jobs](https://github.com/aliciaahunt/jobs).

@@ -1,0 +1,16 @@
+{
+  "purpose": "WhatsApp retained-owner cleanup recovery",
+  "upstream": "https://github.com/openclaw/openclaw/pull/167360",
+  "core_version": "2026.9.9",
+  "plugin_version": "2026.9.9",
+  "files": {
+    "socket-close-CT__V2fz.mjs": {
+      "before": "c8f3dda42527db0f4f0daf0083333f3b28677315038c2390eb8b9c449b291635",
+      "after": "e189aa5541c9c25257d314adfc48eb30099064535378c4c7e26afa4dc4978344"
+    },
+    "connection-controller-CHo1oRJA.mjs": {
+      "before": "f205580efd3a411425e41d51a04feacc371f84e2846f809c42c052aa93cb65c3",
+      "after": "0370b8e47afd877b6ba225580530e87315a31f7944aa77531b1d3f7d4db8216b"
+    }
+  }
+}

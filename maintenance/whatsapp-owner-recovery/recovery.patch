@@ -1,0 +1,127 @@
+--- original/socket-close-CT__V2fz.mjs
++++ candidate/socket-close-CT__V2fz.mjs
+@@ -25,6 +25,7 @@
+ };
+ const OWNER_LOCK_STALE_MS = 3e5;
+ const GATEWAY_LOCAL_OWNER_WAIT_MS = 15e4;
++const INCUMBENT_CLEANUP_RETRY_MS = 5e3;
+ const processOwners = /* @__PURE__ */ new Map();
+ function ownershipCancelledError(signal) {
+ 	const reason = signal?.reason;
+@@ -44,7 +45,22 @@
+ 		signal?.addEventListener("abort", onAbort, { once: true });
+ 	});
+ }
++function startIncumbentCleanup(owner) {
++	const retry = owner.retryCleanup;
++	if (!retry || owner.cleanupAttempt) return;
++	const attempt = Promise.resolve().then(retry).then(() => {
++		owner.lastCleanupError = owner.retryCleanup ? new Error("WhatsApp connection owner still holds this account") : void 0;
++	}, (error) => {
++		owner.lastCleanupError = error;
++	});
++	const settled = attempt.finally(() => {
++		if (owner.cleanupAttempt === settled) owner.cleanupAttempt = null;
++	});
++	owner.cleanupAttempt = settled;
++}
+ async function reserveProcessOwner(params) {
++	let waitingOn;
++	let deadline = 0;
+ 	while (true) {
+ 		if (params.signal?.aborted) throw ownershipCancelledError(params.signal);
+ 		const current = processOwners.get(params.ownerPath);
+@@ -53,18 +69,28 @@
+ 			const owner = {
+ 				released: released.promise,
+ 				resolveReleased: released.resolve,
+-				token: Symbol(params.ownerPath)
++				token: Symbol(params.ownerPath),
++				retryCleanup: null,
++				cleanupAttempt: null,
++				lastCleanupError: void 0
+ 			};
+ 			processOwners.set(params.ownerPath, owner);
+ 			return owner;
+ 		}
+ 		if (!params.waitForLocalOwner) throw new WhatsAppConnectionOwnerBusyError(params.authDir);
++		if (waitingOn !== current) {
++			waitingOn = current;
++			deadline = Date.now() + GATEWAY_LOCAL_OWNER_WAIT_MS;
++		}
++		const remainingMs = deadline - Date.now();
++		if (remainingMs <= 0) throw new WhatsAppConnectionOwnerBusyError(params.authDir, current.lastCleanupError === void 0 ? void 0 : { cause: current.lastCleanupError });
++		startIncumbentCleanup(current);
+ 		let timer;
+ 		let onAbort;
+ 		const outcome = await Promise.race([
+ 			current.released.then(() => "released"),
+ 			new Promise((resolve) => {
+-				timer = setTimeout(() => resolve("timed_out"), GATEWAY_LOCAL_OWNER_WAIT_MS);
++				timer = setTimeout(() => resolve("timed_out"), Math.min(remainingMs, INCUMBENT_CLEANUP_RETRY_MS));
+ 				timer.unref?.();
+ 			}),
+ 			new Promise((resolve) => {
+@@ -76,12 +102,12 @@
+ 			if (onAbort) params.signal?.removeEventListener("abort", onAbort);
+ 		});
+ 		if (outcome === "aborted") throw ownershipCancelledError(params.signal);
+-		if (outcome === "timed_out") throw new WhatsAppConnectionOwnerBusyError(params.authDir);
+ 	}
+ }
+ function abandonProcessOwner(ownerPath, owner) {
+ 	if (processOwners.get(ownerPath)?.token !== owner.token) return;
+ 	processOwners.delete(ownerPath);
++	owner.retryCleanup = null;
+ 	owner.resolveReleased();
+ }
+ async function acquireOwnerLease(params) {
+@@ -133,7 +159,11 @@
+ 		}
+ 	}
+ 	let releasePromise = null;
+-	return { release: async () => {
++	return {
++		setCleanupRetry: (retry) => {
++			if (processOwners.get(ownerPath)?.token === processOwner.token) processOwner.retryCleanup = retry;
++		},
++		release: async () => {
+ 		if (!releasePromise) releasePromise = fileLock.release().then(() => {
+ 			abandonProcessOwner(ownerPath, processOwner);
+ 		}).catch((releaseError) => {
+--- original/connection-controller-CHo1oRJA.mjs
++++ candidate/connection-controller-CHo1oRJA.mjs
+@@ -200,6 +200,7 @@
+ 		this.pendingOwnerContextLease = null;
+ 		this.connectionOwnerLease = null;
+ 		this.retainedOwnerReleaseLease = null;
++		this.shutdownPromise = null;
+ 		this.connectionOwnerLeasePromise = null;
+ 		this.connectionSetupPromise = null;
+ 		this.pendingSocketCleanup = null;
+@@ -500,6 +501,15 @@
+ 		await this.sleep(delayMs, this.abortSignal);
+ 	}
+ 	async shutdown() {
++		if (!this.shutdownPromise) {
++			const attempt = this.runShutdown().finally(() => {
++				if (this.shutdownPromise === attempt) this.shutdownPromise = null;
++			});
++			this.shutdownPromise = attempt;
++		}
++		await this.shutdownPromise;
++	}
++	async runShutdown() {
+ 		this.shuttingDown = true;
+ 		const stoppedError = stoppedControllerError();
+ 		this.ownerAcquireAbortController.abort(stoppedError);
+@@ -566,6 +576,9 @@
+ 		if (this.connectionOwnerLease) return;
+ 		if (!this.connectionOwnerLeasePromise) this.connectionOwnerLeasePromise = (async () => {
+ 			const ownerLease = await acquireWhatsAppGatewayConnectionOwner(this.authDir, this.ownerAcquireAbortController.signal);
++			ownerLease.setCleanupRetry(async () => {
++				if (this.shuttingDown) await this.shutdown();
++			});
+ 			try {
+ 				if (this.shuttingDown) throw stoppedControllerError();
+ 				this.pendingOwnerContextLease = registerChannelRuntimeContext({
